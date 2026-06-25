@@ -1,0 +1,810 @@
+# PERSONACLICK JS SDK v3 API Reference
+
+PERSONACLICK JS SDK v3 uses a browser queue function, normally `window.personaclick`:
+
+```js
+window.personaclick(command, ...args)
+```
+
+The public web API is the queue command surface. Use `personaclick`, PERSONACLICK domains, and PERSONACLICK dashboard terminology consistently.
+
+## General rules from Reference API
+
+- `shop_id` / shop token identifies the shop. JS SDK injects it after `init`; do not hard-code it into later SDK commands.
+- `shop_secret` is for server-to-server/secret operations only. Never expose it in browser code.
+- `stream` labels the source of data for segmentation. It is merchant-defined, case-sensitive, max 16 chars, and should use Latin letters, digits, and `_`.
+- Web SDK should be initialized on every opened page. In SPAs initialize once with `isSpa: true` and let route-level tracking send page events.
+- SDK-generated `did` and `sid` are handled automatically by the browser SDK after initialization.
+- JS SDK session startup also initializes storefront widgets such as recommendations, search, popups, banners/sliders, and stories when their markup is present.
+- Optional parameters should be omitted instead of sent as empty strings; empty optional values can produce `422` API errors.
+
+## Loading/setup
+
+Reference setup snippet loads the queue stub and optimizes SDK bundle loading from the default PERSONACLICK CDN (`cdn.personaclick.com`) in the page `<head>`:
+
+```html
+<script>
+  ;(function () {
+    window.personaclick =
+      window.personaclick ||
+      function () {
+        ;(window.personaclick.q = window.personaclick.q || []).push(arguments)
+      }
+
+    var c = 'https://cdn.personaclick.com'
+    var v = '/v3.js'
+    var s = {
+      link: [
+        { href: c, rel: 'dns-prefetch' },
+        { href: c, rel: 'preconnect' },
+        { href: c + v, rel: 'preload', as: 'script' },
+      ],
+      script: [{ src: c + v, async: '' }],
+    }
+
+    Object.keys(s).forEach(function (tag) {
+      s[tag].forEach(function (attrs) {
+        var el = document.createElement(tag)
+        for (var name in attrs) el.setAttribute(name, attrs[name])
+        document.head.appendChild(el)
+      })
+    })
+  })()
+</script>
+```
+
+A minimal project-local bootstrap is still valid when CDN URL is provided separately:
+
+```js
+window.personaclick =
+  window.personaclick ||
+  function () {
+    ;(window.personaclick.q = window.personaclick.q || []).push(arguments)
+  }
+```
+
+## Initialization
+
+```js
+window.personaclick('init', shopToken)
+```
+
+Full observed/reference signature:
+
+```js
+window.personaclick(
+  'init',
+  shopToken,
+  stream,
+  successCallback,
+  errorCallback,
+  options,
+  isSpa
+)
+```
+
+Arguments:
+
+- `shopToken` — required shop ID/token string.
+- `stream` — optional source label, max 16 characters.
+- `successCallback` — optional function.
+- `errorCallback` — optional function.
+- `options` — optional object:
+  - `cookieless: boolean`; default is `false`; if cookies are unavailable, SDK can fall back to local storage.
+  - `did: string`; use only when an external device-ID system owns the identifier.
+  - `api_host: string`; custom API host.
+  - `cdn_host: string`; custom CDN host, empty value means the default `cdn.personaclick.com`.
+  - `pictures_host: string`; custom pictures host, empty/undefined means default.
+  - `consent: boolean`; when `false`, tracking is disabled and the visitor remains anonymous. Search and some recommendation algorithms can still work.
+- `isSpa` — optional boolean. Pass `true` for SPA session refresh behavior; the SDK checks session ID during tracking and refreshes expired sessions.
+
+Examples:
+
+```js
+window.personaclick('init', 'SHOP_TOKEN')
+window.personaclick('init', 'SHOP_TOKEN', 'web')
+window.personaclick('init', 'SHOP_TOKEN', '', undefined, undefined, { cookieless: true }, true)
+window.personaclick('init', 'SHOP_TOKEN', '', undefined, undefined, { did: 'DEVICE_ID' }, true)
+window.personaclick('init', 'SHOP_TOKEN', '', null, null, {
+  api_host: 'api.custom.com',
+  cdn_host: '',
+  pictures_host: undefined,
+})
+```
+
+## Identity/session helpers
+
+```js
+window.personaclick('did', (did) => {})
+window.personaclick('sid', (sid) => {})
+window.personaclick('abSegment', (segment) => {})
+window.personaclick('reset_session')
+```
+
+## Tracking
+
+```js
+window.personaclick('track', eventName, data, successCallback)
+```
+
+Declared ecommerce events:
+
+- `view`
+- `cart`
+- `remove_from_cart`
+- `category`
+- `wish`
+- `remove_wish`
+- `purchase`
+- `search`
+- `banner_view`
+- `banner_click`
+
+Unknown event names are sent as custom events to `/push/custom`; custom event `value`, when present, must be an integer.
+
+### Product item shape and validation
+
+Most product events accept an ID string/number or object:
+
+```js
+{ id: 'PRODUCT_ID', amount: 1, price: 1999, line_id: 'LINE_ID' }
+```
+
+Supported item fields include:
+
+- `id` — required for object items.
+- `amount` or `quantity` — quantity.
+- `price`
+- `line_id`
+- `fashion_size` or `custom.fashion_size`
+- `recommended_by`
+- `recommended_code`
+- `banner_id` for banner/slider tracking.
+
+IDs must match product IDs from the catalog feed. Empty IDs and IDs longer than 255 characters are ignored; if all IDs are invalid, the API can return `422`. For quantities, `amount` and `quantity` are synonyms in request docs; browser examples usually use `amount`. Zero or negative quantities are normalized to `1`; very high quantities may be capped by API behavior. Negative or non-numeric `price` values are ignored.
+
+### Product view
+
+```js
+window.personaclick('track', 'view', { id: 'PRODUCT_ID' })
+```
+
+When a product view comes from recommendations, instant search, full search, listing, collections, stories, or sliders, preserve attribution when it is not already present in URL/SDK context:
+
+```js
+window.personaclick('track', 'view', {
+  id: 'PRODUCT_ID',
+  recommended_by: 'dynamic',
+  recommended_code: 'BLOCK_OR_QUERY_CODE',
+})
+```
+
+Common `recommended_by` values include `dynamic`, `instant_search`, `full_search`, `listing`, `stories`, and slider/banner sources returned by API.
+
+### Category view
+
+```js
+window.personaclick('track', 'category', 'CATEGORY_ID')
+```
+
+### Cart
+
+Single add/update:
+
+```js
+window.personaclick('track', 'cart', { id: 'PRODUCT_ID', amount: 2, price: 1999 })
+```
+
+Full cart snapshot:
+
+```js
+window.personaclick('track', 'cart', [
+  { id: 'PRODUCT_1', amount: 1 },
+  { id: 'PRODUCT_2', amount: 3 },
+])
+```
+
+Pass an array when synchronizing the complete current cart. Passing an empty array clears the SDK cart:
+
+```js
+window.personaclick('track', 'cart', [])
+```
+
+Remove from cart:
+
+```js
+window.personaclick('track', 'remove_from_cart', { id: 'PRODUCT_ID', amount: 1 })
+```
+
+If the user completely clears the cart, prefer the empty full-cart snapshot above instead of sending multiple `remove_from_cart` events.
+
+Fetch current SDK cart by current `did`:
+
+```js
+window.personaclick('cart', 'get', successCallback, errorCallback)
+```
+
+Response shape from integration docs:
+
+```js
+{ status: 'success', data: { items: [{ uniqid: 'SKU_1', quantity: 1 }] } }
+```
+
+Secret-key cart APIs are backend-only, but storefront cart synchronization and cart clearing are browser-safe via `track`, `cart`, arrays.
+
+### Wishlist
+
+```js
+window.personaclick('track', 'wish', 'PRODUCT_ID')
+window.personaclick('track', 'wish', ['PRODUCT_1', 'PRODUCT_2'])
+window.personaclick('track', 'wish', []) // clear wishlist
+window.personaclick('track', 'remove_wish', { id: 'PRODUCT_ID' })
+```
+
+An array is a full wishlist snapshot. An empty array clears the wishlist. Use `remove_wish` for a single remove action; do not send `remove_wish` with an empty array.
+
+### Purchase
+
+```js
+window.personaclick('track', 'purchase', {
+  order: 'ORDER_ID',
+  email: 'customer@example.com',
+  phone: '+10000000000',
+  order_price: 3998,
+  promocode: 'SALE10',
+  delivery_type: 'courier',
+  payment_type: 'card',
+  custom: { source: 'checkout' },
+  products: [{ id: 'PRODUCT_1', amount: 2, price: 1999, line_id: '1' }],
+})
+```
+
+`products` is required and must be non-empty.
+
+For purchase tracking, do not manually pass `recommended_by`/`recommended_code`; attribution is resolved from earlier view/cart/search/recommendation events. Pass unit price after discounts for each item. For weighted products, use `amount: 1` and put the final item value in `price`.
+
+### Search tracking
+
+```js
+window.personaclick('track', 'search', 'phone')
+window.personaclick('track', 'search', { query: 'phone', results: ['1', '2'] })
+```
+
+### Banner/slider tracking
+
+```js
+window.personaclick('track', 'banner_view', {
+  recommended_code: 'SLIDER_CODE',
+  banner_id: 'BANNER_ID',
+})
+window.personaclick('track', 'banner_click', {
+  recommended_code: 'SLIDER_CODE',
+  banner_id: 'BANNER_ID',
+})
+```
+
+## UTM tracking
+
+```js
+window.personaclick('utm', { utm_source: 'newsletter', utm_campaign: 'spring' })
+```
+
+## Recommendations
+
+```js
+window.personaclick('recommend', code, params, successCallback, errorCallback)
+```
+
+Use the dynamic block code as the second argument. The code is visible in the PERSONACLICK dashboard/block markup (for legacy snippets, `data-recommender-code`). Avoid deprecated forms like `recommend`, `dynamic`, or legacy algorithm names as the code argument unless the SDK source/client dashboard explicitly requires them.
+
+Example:
+
+```js
+window.personaclick(
+  'recommend',
+  'related-products',
+  {
+    item: 'PRODUCT_ID',
+    limit: 8,
+    filters: { price: { min: 100, max: 500 } },
+    extended: true,
+    with_locations: true,
+  },
+  function (response) {
+    // render response
+  },
+  function (error) {
+    console.error(error)
+  }
+)
+```
+
+Request params from Reference API:
+
+- `item` — product ID; required for blocks using Similar/Also bought algorithms.
+- `exclude` — product IDs to exclude.
+- `category` — category ID; required for category-page blocks.
+- `search_query` — required for search-based blocks.
+- `limit` — maximum products to return.
+- `locations` — comma-separated location IDs; returns available products for those locations.
+- `brands` — include only these brands.
+- `exclude_brands` — exclude these brands.
+- `categories` — include only these categories.
+- `discount` — only discounted products when `true`.
+- `extended` — request full product info. Reference API mentions `1`; SDK examples use `true`.
+- `prevent_shuffle` — disable response shuffling.
+- `page` — pagination page, default `1`.
+- `resize_image` — supported sizes: `120`, `140`, `160`, `180`, `200`, `220`.
+- `with_locations` — only works when `extended` is true; response includes `location_ids`.
+
+Initialization helpers:
+
+```js
+window.personaclick('dynamic_init')
+window.personaclick('category_init') // legacy transition helper
+window.personaclick('products_init')
+window.personaclick('add_css', 'recommendations')
+```
+
+## Collections
+
+```js
+window.personaclick('collection', id, params, successCallback, errorCallback)
+```
+
+Params:
+
+- `location`
+- `email`
+- `phone`
+- `external_id`
+- `loyalty_id`
+
+Example:
+
+```js
+window.personaclick('collection', 'COLLECTION_ID', {
+  location: 'LOCATION',
+  email: 'EMAIL',
+  phone: 'PHONE',
+  external_id: 'EXTERNAL_ID',
+  loyalty_id: 'LOYALTY_ID',
+}, successCallback, errorCallback)
+```
+
+Declarative widget markup:
+
+```html
+<div
+  class="personaclick-collection-products-results"
+  data-collection-id="COLLECTION_ID"
+  data-collection-callback="console.log"
+  data-collection-error="console.log"
+></div>
+```
+
+For white-label clusters, the `personaclick` class prefix may be replaced by the white-label code.
+
+## Search
+
+There are two search modes: instant/typeahead (`suggest`) and full search (`search`). Reference API notes a response limit of 10,000 items even when more products match.
+
+### Full search
+
+```js
+window.personaclick(
+  'search',
+  {
+    type: 'full_search',
+    search_query: 'phone',
+    limit: 24,
+    page: 1,
+    offset: 0,
+    category_limit: 10,
+    brand_limit: 50,
+    brands: ['Brand A'],
+    excluded_brands: ['brand b'],
+    colors: ['black'],
+    fashion_sizes: ['M'],
+    locations: ['warehouse-1'],
+    merchants: ['merchant_1'],
+    excluded_merchants: ['merchant_2'],
+    price_min: 100,
+    price_max: 500,
+    categories: ['cat-1'],
+    exclude: ['PRODUCT_ID'],
+    widgetable: true,
+    available: true,
+    ignored: false,
+    extended: true,
+    collapse: false,
+    filters: { color: ['black'] },
+    segment: 'segment-id',
+    sort_by: 'price',
+    order: 'asc',
+    no_clarification: true,
+    filters_search_by: 'popularity',
+    vector: true,
+    debug: true,
+  },
+  successCallback,
+  errorCallback
+)
+```
+
+Search params and gotchas:
+
+- `sort_by` values documented in Reference API: `popular`, `price`, `discount`, `sales_rate`, `date`, `price_margin`, `rating`, `relevance`.
+- `order`: `asc` or `desc` (`desc` default in Reference API text).
+- `filters_search_by`: `name`, `quantity`, or `popularity`; overrides dashboard filter-option sorting.
+- `collapse: false` prevents grouping products with same `group_id`.
+- `discount` may be `true`, `false`, or omitted.
+- `excluded_brands` must be lowercase; brand exclusion requires product feed `brand` field.
+- `excluded_merchants` only works with the merchant/location whitelist semantics described by API; test carefully.
+- `debug: true` requires debug cookie (`personaclick_debug=1`) and exposes debug fields in response.
+- Price aggregations (`price_range`, `price_ranges`, `price_median`) ignore zero-price products.
+
+### Instant suggest
+
+```js
+window.personaclick(
+  'suggest',
+  {
+    type: 'instant_search',
+    search_query: 'pho',
+    categories: ['cat-1'],
+    locations: ['warehouse-1'],
+    segment: 'segment-id',
+    extended: true,
+    excluded_merchants: ['merchant_2'],
+    excluded_brands: ['brand b'],
+    search_scope: 'name,brand,categories',
+    collapse: false,
+    vector: true,
+  },
+  successCallback,
+  errorCallback
+)
+```
+
+`search_scope` is a comma-separated whitelist. Common parameters include `params`, `brand`, `type`, `model`, `categories`, and `name`; book-specific subparameters include `author`, `publisher`, `illustrator`, `editor`, and `series`.
+
+### Search helpers
+
+```js
+window.personaclick('search_collection', { id: 'COLLECTION_ID' }, successCallback)
+window.personaclick('search_init', true)
+window.personaclick('full_search_init')
+```
+
+Blank/zero-results search exists in the broader SDK ecosystem; only use it from web if confirmed in the current JS SDK source.
+
+## Profile
+
+```js
+window.personaclick('profile', 'set', data, successCallback, errorCallback)
+window.personaclick('profile', 'get', successCallback, isSpa)
+```
+
+Use `profile`, `set` when a visitor logs in, registers, changes contact data, or otherwise identifies themselves. This is the main browser-side way to switch the current device/session to the correct CDP profile.
+
+Common standard profile fields:
+
+- `email`
+- `phone`
+- `id` / external ID
+- `loyalty_id`
+- `first_name`
+- `last_name`
+- `location`
+- `gender`
+- `birthday`
+- `kids`
+- `auto`
+
+Custom profile properties can be strings, integers, floats, arrays, JSON objects, booleans, or date strings when the project configuration supports them.
+
+Examples:
+
+```js
+window.personaclick('profile', 'set', {
+  email: 'customer@example.com',
+  phone: '+10000000000',
+  id: 'CRM_USER_ID',
+  loyalty_id: 'LOYALTY_ID',
+  first_name: 'Jane',
+  last_name: 'Smith',
+})
+
+window.personaclick('profile', 'get', function (profile) {
+  console.log(profile)
+}, true)
+```
+
+Full profile reads by arbitrary identifier, profile purging, and forced email/phone changes require `shop_secret`; keep them on the backend.
+
+## Reputation
+
+Reference API says shop review fetching is not implemented in JS SDK. Do not use browser code for secret-backed reputation endpoints unless SDK source confirms support.
+
+```js
+window.personaclick('reputation', action, data, successCallback) // source-observed; verify before new integrations
+```
+
+## Subscriptions and web push
+
+```js
+window.personaclick('webpush_subscription', 'web_push_subscribe', successCallback, errorCallback)
+window.personaclick('webpush_subscription', 'web_push_supported', (supported) => {})
+window.personaclick('webpush_subscription', 'web_push_subscribed', (subscribed) => {})
+```
+
+Subscription aliases `subscription`, `webpush_subscription`, and `email_subscription` share the same command handler in the current skill baseline.
+
+Manage email/SMS subscriptions:
+
+```js
+window.personaclick('subscription', 'manage', {
+  email: 'my@example.com',
+  phone: '+100000000000',
+  email_bulk: true,
+  email_chain: true,
+  email_transactional: true,
+  sms_bulk: true,
+  sms_chain: true,
+  sms_transactional: true,
+  web_push_bulk: true,
+  web_push_chain: true,
+  web_push_transactional: true,
+  mobile_push_bulk: true,
+  mobile_push_chain: true,
+  mobile_push_transactional: true,
+  telegram_bulk: true,
+  telegram_chain: true,
+  telegram_transactional: true,
+  whatsapp_bulk: true,
+  whatsapp_chain: true,
+  whatsapp_transactional: true,
+  max_bulk: true,
+  max_chain: true,
+  max_transactional: true,
+  mobile_wallet_bulk: true,
+})
+```
+
+Change only selected channels by sending only those fields. Reference API also supports status checks:
+
+```js
+window.personaclick('subscription', 'check', successCallback, errorCallback)
+window.personaclick('subscription', 'manage', params)
+window.personaclick('email_subscription', 'manage', params)
+```
+
+Frontend subscription changes require the current SDK `did`; this prevents arbitrary subscribe/unsubscribe actions by just passing someone else's email or phone. Backend requests use `shop_secret` instead.
+
+Server/system subscription operations such as unsubscribe, complaint, hard bounce, blacklist, changed subscriptions lists, and secret-backed exports are not browser tasks.
+
+## Triggers
+
+```js
+window.personaclick('subscribe_trigger', trigger, params)
+window.personaclick('unsubscribe_trigger', trigger, params)
+window.personaclick('check_trigger', trigger, params, successCallback, errorCallback)
+```
+
+Reference trigger status examples are easy to confuse: validate against SDK/source or API behavior before shipping.
+
+```js
+// Reference API example labels this as Back in Stock status.
+window.personaclick('check_trigger', 'product_price_decrease', params, successCallback, errorCallback)
+
+// Reference API example labels this as Product Price Drop status.
+window.personaclick('check_trigger', 'product_available', params, successCallback, errorCallback)
+```
+
+Price-drop trigger examples:
+
+```js
+window.personaclick('subscribe_trigger', 'product_price_decrease', {
+  email: 'customer@example.com',
+  item: 'PRODUCT_ID',
+  price: 160,
+})
+
+window.personaclick('unsubscribe_trigger', 'product_price_decrease', {
+  email: 'customer@example.com',
+  item_ids: ['PRODUCT_ID_1', 'PRODUCT_ID_2'],
+})
+
+// Empty item_ids removes all price-drop subscriptions for this identifier.
+window.personaclick('unsubscribe_trigger', 'product_price_decrease', {
+  email: 'customer@example.com',
+  item_ids: [],
+})
+```
+
+Back-in-stock trigger examples:
+
+```js
+window.personaclick('subscribe_trigger', 'product_available', {
+  email: 'customer@example.com',
+  item: 'PRODUCT_ID',
+  properties: { fashion_size: 'XL' },
+})
+
+window.personaclick('unsubscribe_trigger', 'product_available', {
+  email: 'customer@example.com',
+  item_ids: ['PRODUCT_ID_1', 'PRODUCT_ID_2'],
+})
+```
+
+Use `item` for subscribe and `item_ids` for unsubscribe. For unsubscribe, an empty `item_ids` array means unsubscribe from all matching trigger subscriptions for the identifier.
+
+## Promo codes
+
+```js
+window.personaclick('get_promo_code', params, successCallback, errorCallback)
+```
+
+## NPS
+
+```js
+window.personaclick('nps', 'categories', successCallback, errorCallback)
+window.personaclick('nps', 'channels', successCallback, errorCallback)
+window.personaclick('nps', 'review', data, successCallback, errorCallback)
+```
+
+Save review:
+
+```js
+window.personaclick('nps', 'review', {
+  channel: 'channel_code',
+  category: 'category_code',
+  rate: 7,
+  comment: 'Some comment',
+}, successCallback, errorCallback)
+```
+
+`rate`, `channel`, and `category` are required. `comment` and identifiers such as email/phone/loyalty/order may be optional depending on the configured survey and channel; SDK uses `did` automatically for web/mobile.
+
+NPS review listing requires `shop_secret` and is not for browser SDK.
+
+## Loyalty
+
+```js
+window.personaclick('loyalty', 'join', data, successCallback, errorCallback)
+window.personaclick('loyalty', 'status', data, successCallback, errorCallback)
+```
+
+## Segments
+
+```js
+window.personaclick('segment', 'add', data)
+window.personaclick('segment', 'remove', data)
+window.personaclick('segment', 'get', successCallback)
+window.personaclick('segment', 'get', params, successCallback)
+```
+
+Examples:
+
+```js
+window.personaclick('segment', 'add', {
+  email: 'jane@example.com',
+  phone: '+10000000000',
+  segment_id: 'SEGMENT_ID',
+})
+
+window.personaclick('segment', 'remove', {
+  email: 'jane@example.com',
+  segment_id: 'SEGMENT_ID',
+})
+
+// Without contacts, current did is used automatically in JS SDK.
+window.personaclick('segment', 'remove', { segment_id: 'SEGMENT_ID' })
+
+window.personaclick('segment', 'get', function (segments) {
+  // [{ id: 313, type: 'static' }, { id: 314, type: 'dynamic' }]
+})
+```
+
+For add/remove, Reference API identifies users by `email` and/or `phone`; JS SDK may omit them and use current `did`.
+
+## Orders
+
+```js
+window.personaclick('orders', 'last_for_user', params, successCallback)
+```
+
+`last_for_user` fetches products from the user's last purchase. It can identify the current visitor by SDK `did`; params may also include identifiers such as `external_id` or `telegram_id` when available.
+
+Full order history (`orders/by_user`), order imports, offline orders, status sync, and cancellation endpoints require `shop_secret`; do not implement them in browser code.
+
+## Products
+
+Fetch products by params:
+
+```js
+window.personaclick('products', params, successCallback, errorCallback)
+```
+
+Common product-list params:
+
+- `brands`
+- `merchants`
+- `categories`
+- `locations`
+- `limit`
+- `page`
+- `filters`
+- `price_min`, `price_max`
+- `sort_by`, `sort_dir` / `order`
+
+Example:
+
+```js
+window.personaclick('products', { limit: 5, categories: '313' }, successCallback, errorCallback)
+```
+
+Counters:
+
+```js
+window.personaclick('products', 'counters', 'PRODUCT_ID', successCallback, errorCallback)
+```
+
+Counters response has `daily` (24h) and `now` (15m) objects with `view`, `cart`, and `purchase` counts.
+
+Info:
+
+```js
+window.personaclick('products', 'info', params, successCallback, errorCallback) // source-observed; Reference API says JS no implementation for /products/get
+```
+
+Not-widgetable products, product info by `shop_secret`, secret-backed product cart APIs, and product subscription exports are server/secret operations; do not implement those endpoints in browser SDK. Use `track`, `cart`, arrays for storefront cart synchronization and clearing.
+
+## Popups, stories, speech, sliders, debug
+
+```js
+window.personaclick('popup', popupId)
+window.personaclick('stories_init')
+window.personaclick('start_stories', code)
+window.personaclick('say', text)
+window.personaclick('slider', params, successCallback, errorCallback)
+window.personaclick('slider_init')
+window.personaclick('debug')
+```
+
+Stories: Reference API documents `start_stories` for programmatic story campaign opening; second argument is the story block ID/code. Web `stories_init` availability should be verified in SDK source for new work.
+
+Stories markup:
+
+```html
+<div class="personaclick-stories" data-code="STORY_BLOCK_CODE"></div>
+```
+
+Slider examples:
+
+```html
+<div class="personaclick-slider" data-slider-code="SLIDER_CODE"></div>
+```
+
+```js
+// Raw data for custom rendering.
+window.personaclick('slider', { code: 'SLIDER_CODE' }, (response) => console.log(response))
+
+// Render into a block with config.
+window.personaclick('slider', {
+  code: 'SLIDER_CODE',
+  block: 'personaclick-slider',
+  config: {
+    dotBgColor: 'red',
+    dotActiveBgColor: 'green',
+    dotHoverBgColor: 'yellow',
+  },
+})
+```
+
+Slider params include `code` (required), current SDK identifiers (`did`, email, phone, external_id where supported), and `tags` for comma-separated banner-tag filtering.
+
+## Notification and communication events
+
+Notification center message lists, notification counters, message statuses, and communication delivery/open/click/close tracking are not browser JS SDK tasks in the integration docs. They are server/mobile oriented and often require `shop_secret`, message `code`, and message `type`. Do not expose these endpoints in browser code unless the current JS SDK source explicitly provides a safe wrapper.
